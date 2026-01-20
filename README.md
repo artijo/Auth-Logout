@@ -293,7 +293,313 @@ LogoutHandler.init({
 
 ---
 
-## 🔧 Advanced Usage
+## �️ Server-Side Session (Stateful)
+
+สำหรับระบบที่ใช้ **Stateful Session** (เช่น express-session, Passport.js) ที่เก็บ session บน server (Redis, Database, Memory) จะต้องเรียก API ไปยัง server เพื่อทำลาย session ด้วย
+
+### ทำไมต้องทำลาย Session บน Server?
+
+| ประเภท          | Client-Side (Stateless)    | Server-Side (Stateful)                |
+| --------------- | -------------------------- | ------------------------------------- |
+| **ที่เก็บ**     | JWT ใน localStorage/cookie | Session ID ใน cookie, ข้อมูลบน server |
+| **การ Logout**  | ลบ token ฝั่ง client พอ    | ต้องทำลาย session บน server ด้วย      |
+| **ความปลอดภัย** | Token ยังใช้ได้จนหมดอายุ   | Session ถูกทำลายทันที                 |
+
+### ตัวอย่างการใช้งาน
+
+#### 1. Express.js + express-session
+
+**Server (Node.js)**
+
+```javascript
+// server.js
+const express = require("express");
+const session = require("express-session");
+const cors = require("cors");
+
+const app = express();
+
+app.use(
+  cors({
+    origin: "http://localhost:3000",
+    credentials: true, // สำคัญ! สำหรับส่ง cookie
+  }),
+);
+
+app.use(
+  session({
+    secret: "your-secret-key",
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+      secure: false, // true ถ้าใช้ HTTPS
+      httpOnly: true,
+      maxAge: 24 * 60 * 60 * 1000, // 1 day
+    },
+  }),
+);
+
+// Login route
+app.post("/api/login", (req, res) => {
+  // ... validate user
+  req.session.userId = user.id;
+  req.session.user = user;
+  res.json({ success: true });
+});
+
+// Logout route - ทำลาย session
+app.post("/api/logout", (req, res) => {
+  req.session.destroy((err) => {
+    if (err) {
+      return res.status(500).json({ error: "Logout failed" });
+    }
+    res.clearCookie("connect.sid"); // ชื่อ cookie default ของ express-session
+    res.json({ success: true });
+  });
+});
+
+app.listen(3001);
+```
+
+**Client (Browser)**
+
+```javascript
+LogoutHandler.init({
+  storageType: "all",
+  localStorageKeys: ["user", "preferences"],
+  cookieNames: ["connect.sid"], // session cookie
+
+  customClearFn: async () => {
+    // เรียก API เพื่อทำลาย session บน server
+    const response = await fetch("http://localhost:3001/api/logout", {
+      method: "POST",
+      credentials: "include", // สำคัญ! ส่ง cookie ไปด้วย
+      headers: {
+        "Content-Type": "application/json",
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error("Server logout failed");
+    }
+
+    console.log("Server session destroyed");
+  },
+
+  defaultRedirectUrl: "/login",
+  debug: true,
+}).execute();
+```
+
+#### 2. Express.js + Passport.js
+
+**Server (Node.js)**
+
+```javascript
+// server.js
+const passport = require("passport");
+
+// Logout route สำหรับ Passport.js
+app.post("/api/logout", (req, res, next) => {
+  req.logout((err) => {
+    if (err) {
+      return next(err);
+    }
+    req.session.destroy((err) => {
+      if (err) {
+        return res.status(500).json({ error: "Logout failed" });
+      }
+      res.clearCookie("connect.sid");
+      res.json({ success: true });
+    });
+  });
+});
+```
+
+**Client (Browser)**
+
+```javascript
+LogoutHandler.init({
+  storageType: "cookie",
+  cookieNames: ["connect.sid"],
+
+  customClearFn: async () => {
+    await fetch("/api/logout", {
+      method: "POST",
+      credentials: "include",
+    });
+  },
+
+  defaultRedirectUrl: "/login",
+}).execute();
+```
+
+#### 3. Express.js + Redis Session Store
+
+**Server (Node.js)**
+
+```javascript
+const session = require("express-session");
+const RedisStore = require("connect-redis").default;
+const { createClient } = require("redis");
+
+const redisClient = createClient();
+redisClient.connect();
+
+app.use(
+  session({
+    store: new RedisStore({ client: redisClient }),
+    secret: "your-secret-key",
+    resave: false,
+    saveUninitialized: false,
+  }),
+);
+
+// Logout - ลบ session จาก Redis
+app.post("/api/logout", async (req, res) => {
+  const sessionId = req.sessionID;
+
+  req.session.destroy(async (err) => {
+    if (err) {
+      return res.status(500).json({ error: "Logout failed" });
+    }
+
+    // ลบจาก Redis โดยตรง (optional - destroy() ทำให้แล้ว)
+    // await redisClient.del(`sess:${sessionId}`);
+
+    res.clearCookie("connect.sid");
+    res.json({ success: true });
+  });
+});
+```
+
+#### 4. ใช้กับ JWT + Refresh Token (Stateful Refresh Token)
+
+บางระบบใช้ JWT เป็น access token แต่เก็บ refresh token ไว้บน server (database)
+
+**Server (Node.js)**
+
+```javascript
+// Logout - ลบ refresh token จาก database
+app.post("/api/logout", async (req, res) => {
+  const refreshToken = req.cookies.refreshToken || req.body.refreshToken;
+
+  if (refreshToken) {
+    // ลบ refresh token จาก database
+    await RefreshToken.deleteOne({ token: refreshToken });
+
+    // หรือเพิ่มเข้า blacklist
+    // await TokenBlacklist.create({ token: refreshToken });
+  }
+
+  res.clearCookie("refreshToken");
+  res.json({ success: true });
+});
+```
+
+**Client (Browser)**
+
+```javascript
+LogoutHandler.init({
+  storageType: "all",
+  localStorageKeys: ["accessToken"],
+  cookieNames: ["refreshToken"],
+
+  customClearFn: async () => {
+    await fetch("/api/logout", {
+      method: "POST",
+      credentials: "include",
+      headers: {
+        Authorization: `Bearer ${localStorage.getItem("accessToken")}`,
+      },
+    });
+  },
+
+  defaultRedirectUrl: "/login",
+}).execute();
+```
+
+#### 5. Logout จากทุก Devices (Logout All Sessions)
+
+**Server (Node.js)**
+
+```javascript
+// Logout ทุก sessions ของ user
+app.post("/api/logout-all", async (req, res) => {
+  const userId = req.session.userId;
+
+  // ลบทุก sessions ของ user จาก Redis
+  const keys = await redisClient.keys("sess:*");
+  for (const key of keys) {
+    const session = JSON.parse(await redisClient.get(key));
+    if (session.userId === userId) {
+      await redisClient.del(key);
+    }
+  }
+
+  // หรือลบทุก refresh tokens
+  await RefreshToken.deleteMany({ userId: userId });
+
+  res.clearCookie("connect.sid");
+  res.json({ success: true, message: "Logged out from all devices" });
+});
+```
+
+**Client (Browser)**
+
+```javascript
+LogoutHandler.init({
+  storageType: "all",
+  clearAllLocalStorage: true,
+  clearAllCookies: true,
+
+  customClearFn: async () => {
+    await fetch("/api/logout-all", {
+      method: "POST",
+      credentials: "include",
+    });
+  },
+
+  defaultRedirectUrl: "/login",
+}).execute();
+```
+
+### ⚠️ Best Practices สำหรับ Stateful Session
+
+1. **ใช้ `credentials: 'include'`** - เพื่อส่ง session cookie ไปกับ request
+2. **Handle errors gracefully** - ถ้า server logout ล้มเหลว ให้ลบ client data และ redirect อยู่ดี
+3. **Clear cookie บน server** - ใช้ `res.clearCookie()` เพื่อให้แน่ใจว่า cookie ถูกลบ
+4. **Set proper CORS** - ถ้า client และ server อยู่คนละ domain ต้องตั้งค่า CORS ให้ถูกต้อง
+
+```javascript
+// ตัวอย่างการ handle error gracefully
+LogoutHandler.init({
+  customClearFn: async () => {
+    try {
+      const response = await fetch("/api/logout", {
+        method: "POST",
+        credentials: "include",
+      });
+
+      if (!response.ok) {
+        console.warn("Server logout failed, continuing with client cleanup");
+      }
+    } catch (error) {
+      // Network error - ยังคง logout client side
+      console.warn("Could not reach server:", error);
+    }
+  },
+
+  onError: (error) => {
+    // ถึงแม้ server logout ล้มเหลว ก็ยัง redirect ไป login
+    console.error("Logout error:", error);
+  },
+}).execute();
+```
+
+---
+
+## �🔧 Advanced Usage
 
 ### ใช้งานแบบ Manual (ไม่ Auto Execute)
 
