@@ -38,7 +38,7 @@
      */
     config: {
       // URL สำหรับ redirect เมื่อไม่มี next parameter
-      defaultRedirectUrl: "http://localhost:3001/login",
+      defaultRedirectUrl: "https://authen-center.lab.bussing.app/login",
 
       // Storage type: 'localStorage', 'sessionStorage', 'cookie', 'all', 'custom'
       storageType: "localStorage",
@@ -117,7 +117,7 @@
      */
     reset() {
       this.config = {
-        defaultRedirectUrl: "http://localhost:3001/login",
+        defaultRedirectUrl: "https://authen-center.lab.bussing.app/login",
         storageType: "localStorage",
         localStorageKeys: [],
         sessionStorageKeys: [],
